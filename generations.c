@@ -8,8 +8,9 @@
 #include <string.h>
 
 // Benchmark as of 3/20: (microseconds / generation of 65536)
-//  1284, 1268, 1296, 1273, 1294. Average 1283 microseconds/generation
-//
+//  1284, 1268, 1296, 1273, 1294. Average 1283 microseconds/generation (while doing stuff in the background)
+//  
+//  After optimizations: 1160
 
 /*
  * Each organism is going to be represented as a char. We could be more efficient - slightly so at least - by putting 4 organisms in each char. However, I believe this would be computationally
@@ -113,10 +114,12 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextMe
                     num_first += 1;
 #endif
                     // Three groupings: > thresh_ab > thresh_aa > 0
+                    
+                    // Should shift to 0, 2, 4
 
-                    counts[4 >> ((firstIndex<thresh_aa)+(firstIndex<thresh_ab))] += 1;
+                    counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
 #ifdef DEBUG
-                    from_first[4 >> ((firstIndex<thresh_aa)+(firstIndex<thresh_ab))] += 1;
+                    from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
 #endif // Somehow this code block being enabled causes an abort trap to fire between returning from this function and the next line of code being run because from_first wasn't large enough
        // Which makes sense theoretically but why did it fire then? Maybe de-allocation? Ahh was that where the previous stack pointer was?
                     /*
@@ -209,29 +212,13 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextMe
             unsigned short firstIndex = indexEntropy >> 16; // Get 16 upper bits instead of lower 15 b/c we use firstIndex more
             
             if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
+
+                
+                counts[2 >> ((firstIndex<thresh_aa)+(firstIndex<thresh_ab))] += 1;
 #ifdef DEBUG
+                from_first[2 >> ((firstIndex<thresh_aa)+(firstIndex<thresh_ab))] += 1;
                 num_first += 1;
 #endif
-                if (firstIndex < thresh_aa){
-#ifdef DEBUG
-                    from_first[0] += 1;
-#endif
-                    counts[0] += 1;
-                }
-                
-                else if (firstIndex < thresh_ab){
-#ifdef DEBUG
-                    from_first[1] += 1;
-#endif
-                    counts[1] += 1;
-                }
-                
-                else {
-#ifdef DEBUG
-                    from_first[3] += 1;
-#endif
-                    counts[3] += 1;
-                }
             }
             
             else {
@@ -284,8 +271,6 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextMe
     }
     
 #ifdef DEBUG
-    from_first[1] += from_first[2];
-    from_first[2] = from_first[3];
     
     from_second[1] += from_second[2];
     from_second[2] = from_second[3];
@@ -293,12 +278,13 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextMe
     gettimeofday(&end,NULL);
     printf("Took %ld microseconds to progress generation\n",(1000000 * end.tv_sec + end.tv_usec) -  (1000000 * start.tv_sec + start.tv_usec));
     
-    printf("From first aa: %d from second %d. From first ab: %d from second: %d. From first bb: %d from second %d\n",from_first[0],from_second[0],from_first[1],from_second[1],from_first[2],from_second[2]);
+    printf("From first aa: %d from second %d. From first ab: %d from second: %d. From first bb: %d from second %d\n",from_first[0],from_second[0],from_first[2],from_second[1],from_first[4],from_second[2]);
     printf("First was chosen %d times. Second was chosen %d times\n",num_first,num_second);
     printf("From second started with 0 %d times and 1 %d times\n",second_outputs[0],second_outputs[1]);
-    printf("From second first: %d %d %d %d\n",from_second_first[0],from_second_first[1],from_second_first[2],from_second_first[3]);
-    printf("From second second: %d %d %d %d\n",from_second_second[0],from_second_second[1],from_second_second[2],from_second_second[3]);
-    printf("From second third: %d %d %d %d\n",from_second_third[0],from_second_third[1],from_second_third[2],from_second_third[3]);
+    printf("From second first:\t%d %d %d %d\n",from_second_first[0],from_second_first[1],from_second_first[2],from_second_first[3]);
+    printf("From second second:\t%d %d %d %d\n",from_second_second[0],from_second_second[1],from_second_second[2],from_second_second[3]);
+    printf("From second third:\t%d %d %d %d\n",from_second_third[0],from_second_third[1],from_second_third[2],from_second_third[3]);
+    printf("0: %d, 1: %d, 2: %d 3: %d\n",counts[0],counts[1],counts[2],counts[3]);
 #endif
     /*
     char *filename = malloc(31);
@@ -348,19 +334,12 @@ int main(int argc, char **argv){
     int result[3] = {0,0,0};
 #ifdef DEBUG
     for (int i = 0; i < num_generations; i++){
-        progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms, result);
-        thresh_aa = result[0];
-        thresh_ab = thresh_aa + result[1];
-        thresh_bb = thresh_ab + result[2];
-        /*
-        printf("progress generation called\n");
         progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms,result);
-        printf("Thing returned\n");
         printf("aa: %d ab: %d bb: %d\n",result[0],result[1],result[2]);
         thresh_aa = result[0];
         thresh_ab = thresh_aa + result[1];
         thresh_bb = thresh_ab + result[2];
-        results[i] = result;*/
+        results[i] = result;
     }
 #else
 #ifdef SPEEDTEST
