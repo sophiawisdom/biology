@@ -1,4 +1,12 @@
 # bio_generations
+
+# 45 seconds for (65536,100) = 145k/s
+# 20 seconds for (30000,100) = 152k/s
+# 6.73 seconds for (10000,100) = 148k/s
+# 62 seconds for (5000,300) = 24k/s
+# 208 seconds for (5000,6000) = 144k/s
+# 192 seconds for (3000,7000) = 109k/s
+
 import random
 import math
 import matplotlib.pyplot as plt
