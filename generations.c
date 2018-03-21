@@ -7,7 +7,9 @@
 #include <errno.h>
 #include <string.h>
 
-//#define DEBUG true
+// Benchmark as of 3/20: (microseconds / generation of 65536)
+//  1284, 1268, 1296, 1273, 1294. Average 1283 microseconds/generation
+//
 
 /*
  * Each organism is going to be represented as a char. We could be more efficient - slightly so at least - by putting 4 organisms in each char. However, I believe this would be computationally
@@ -19,7 +21,7 @@
  * Doing the math, it seems that random() returns in something like 6.87 cycles on average, which is incredibly fast.
  */
 
-int * initialize_generation(int number){ // 14 milliseconds faster on generating 1.6 million organisms lol. 224 organisms / microsecond is good
+void initialize_generation(int number, int* gen){ // 14 milliseconds faster on generating 1.6 million organisms lol. 224 organisms / microsecond is good
     // AA consistently has ~17.5k while BB consistently has ~15k.
     // This is equivalent to a normal distribution. There's probably some normal distribution function I could use that's faster.
     int num_aa = 0;
@@ -52,20 +54,23 @@ int * initialize_generation(int number){ // 14 milliseconds faster on generating
     
     gettimeofday(&end,NULL);
     
+#ifdef DEBUG
     printf("Took %ld microseconds to generate new generation with %d aa, %d ab, and %d bb\n",(1000000 * end.tv_sec + end.tv_usec) -  (1000000 * start.tv_sec + start.tv_usec),num_aa,num_ab,num_bb);
+#endif
     
-    int gen[3] = {num_aa,num_ab,num_bb};
-    return gen;
+    gen[0] = num_aa;
+    gen[1] = num_ab;
+    gen[2] = num_bb;
 }
 
-int * progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextMembers){
+void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextMembers, int* result){
     
     // 0 | thresh_aa | thresh_ab | end = thresh_bb
 #ifdef DEBUG
     printf("Thresholds: %d %d %d\t",thresh_aa,thresh_ab,thresh_bb);
     printf("AA has size: %d. AB has size %d. BB has size %d\n",thresh_aa,thresh_ab-thresh_aa,thresh_bb-thresh_ab);
     
-    int from_first[4] = {0,0,0,0};
+    int from_first[5] = {0,0,0,0,0};
     int from_second[4] = {0,0,0,0};
     
     int from_second_first[4] = {0,0,0,0};
@@ -83,7 +88,7 @@ int * progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextM
     gettimeofday(&start,NULL);
 #endif
     
-    int counts[4] = {0,0,0,0};
+    int counts[5] = {0,0,0,0,0};
     
     // What if you store all the values in a long long? You should be able to keep that in a single register so it would be faster. Each value could only go up to 65536
     
@@ -107,7 +112,24 @@ int * progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextM
 #ifdef DEBUG
                     num_first += 1;
 #endif
-                    if (firstIndex < thresh_aa){
+                    // Three groupings: > thresh_ab > thresh_aa > 0
+
+                    counts[4 >> ((firstIndex<thresh_aa)+(firstIndex<thresh_ab))] += 1;
+#ifdef DEBUG
+                    from_first[4 >> ((firstIndex<thresh_aa)+(firstIndex<thresh_ab))] += 1;
+#endif // Somehow this code block being enabled causes an abort trap to fire between returning from this function and the next line of code being run because from_first wasn't large enough
+       // Which makes sense theoretically but why did it fire then? Maybe de-allocation? Ahh was that where the previous stack pointer was?
+                    /*
+                    if (firstIndex < thresh_ab){ // a or ab
+                        // (firstIndex<thresh_aa) = 1 if should be aa, 0 if should be ab
+                        // (firstIndex>thresh_ab) = 1 if should be bb, 0 if should be ab or aa
+                        counts[1 >> (firstIndex<thresh_aa)] += 1;
+#ifdef DEBUG
+                        from_first[1 >> (firstIndex<thresh_aa)] += 1;
+#endif
+                    }
+                    
+                    if (firstIndex < thresh_aa){ // With this enabled it takes ~1400 microseconds / generation, while with above it takes ~1300 microseconds / generation
 #ifdef DEBUG
                         from_first[0] += 1;
 #endif
@@ -126,7 +148,7 @@ int * progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextM
                         from_first[3] += 1;
 #endif
                         counts[3] += 1;
-                    }
+                    }*/
                 }
                 
                 else {
@@ -292,8 +314,10 @@ int * progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int nextM
         printf("Write error: %s\n",strerror(errno));
     }
     close(fd);*/
-    
-    return counts;
+    result[0] = counts[0];
+    result[1] = counts[1] + counts[2];
+    result[2] = counts[3] + counts[4];
+    return;
 }
 
 int main(int argc, char **argv){
@@ -312,27 +336,59 @@ int main(int argc, char **argv){
     int num_generations = 1000;
 #endif
     printf("Beginning simulation of %d organisms for %d generations\n",num_organisms,num_generations);
-/*    int *i_g = initialize_generation(num_organisms);
-    int thresh_aa = i_g[0];
-    int thresh_ab = thresh_aa + i_g[1];
-    int thresh_bb = thresh_ab + i_g[2];*/
-    int thresh_aa = 16000;
+    int initial_values[3];
+    initialize_generation(num_organisms,initial_values);
+    int thresh_aa = initial_values[0];
+    int thresh_ab = thresh_aa + initial_values[1];
+    int thresh_bb = thresh_ab + initial_values[2];
+/*    int thresh_aa = 16000;
     int thresh_ab = 49536;
-    int thresh_bb = 65536;
+    int thresh_bb = 65536;*/
     int **results = malloc(num_generations*3*sizeof(int));
-    int* result;
+    int result[3] = {0,0,0};
 #ifdef DEBUG
     for (int i = 0; i < num_generations; i++){
-        result = progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms);
-        printf("0: %d 1: %d 2: %d 3: %d\n",result[0],result[1],result[2],result[3]);
-        result[1] += result[2];
-        result[2] = result[3];
+        progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms, result);
+        thresh_aa = result[0];
+        thresh_ab = thresh_aa + result[1];
+        thresh_bb = thresh_ab + result[2];
+        /*
+        printf("progress generation called\n");
+        progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms,result);
+        printf("Thing returned\n");
         printf("aa: %d ab: %d bb: %d\n",result[0],result[1],result[2]);
         thresh_aa = result[0];
         thresh_ab = thresh_aa + result[1];
         thresh_bb = thresh_ab + result[2];
-        results[i] = result;
+        results[i] = result;*/
     }
+#else
+#ifdef SPEEDTEST
+    int time_takens[20];
+    int average = 0;
+    for (int i = 0;i < 20; i++){
+        struct timeval start;
+        struct timeval end;
+        gettimeofday(&start,NULL);
+        for (int j = 0; j < 1000; j++) {
+            progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms, result);
+            thresh_aa = result[0];
+            thresh_ab = thresh_aa + result[1];
+            thresh_bb = thresh_ab + result[2];
+        }
+        gettimeofday(&end,NULL);
+        int time_taken = (1000000 * end.tv_sec + end.tv_usec) -  (1000000 * start.tv_sec + start.tv_usec);
+        printf("%d microseconds\t",time_taken);
+        printf("aa: %d\tab:%d\tbb:%d\n",result[0],result[1],result[2]);
+        time_takens[i] = time_taken;
+        average += time_taken;
+        
+        initialize_generation(num_organisms,initial_values);
+        thresh_aa = initial_values[0];
+        thresh_ab = thresh_aa + initial_values[1];
+        thresh_bb = thresh_ab + initial_values[2];
+    }
+    printf("Took on average %d microseconds per 1000 generationss or %d microseconds per generation\n",average/20,average/20000);
 #else
     for (int i = 0; i < num_generations/100; i++){
         struct timeval start;
@@ -340,9 +396,7 @@ int main(int argc, char **argv){
         gettimeofday(&start,NULL);
 #pragma clang loop unroll(full)
         for (int j = 0; j < 100; j++) {
-            result = progress_generation(thresh_aa,thresh_ab,thresh_bb,num_organisms);
-            result[1] += result[2];
-            result[2] = result[3]; // This would've led to results[2] changing, not result[2] changing. Compiler warning helped me.
+            progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms,result);
             thresh_aa = result[0];
             thresh_ab = thresh_aa + result[1];
             thresh_bb = thresh_ab + result[2];
@@ -352,6 +406,7 @@ int main(int argc, char **argv){
         printf("%ld microseconds\t",(1000000 * end.tv_sec + end.tv_usec) -  (1000000 * start.tv_sec + start.tv_usec));
         printf("aa: %d\tab:%d\tbb:%d\n",result[0],result[1],result[2]);
     }
+#endif
 #endif
     return 0;
 }
