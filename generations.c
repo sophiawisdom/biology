@@ -9,11 +9,15 @@
 #include <string.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <x86intrin.h>
+#include "fast_rand.h"
 
 // Benchmark as of 3/20: (microseconds / generation of 65536)
 //  1284, 1268, 1296, 1273, 1294. Average 1283 microseconds/generation (while doing stuff in the background)
 // Benchmark as of "no bugs, working version" ~= 1250. I benchmarked 1247 and then 1250 while doing nothing
 //  After optimizations: 1160, 1115, 1094
+// 3/27 replacement of rand function with FastRand() gives us 1005
+// 3/27 replacing reading from /dev/random with seeding random() from /dev/random and then using random() saved 15 microseconds / generation
 
 
 // Todo: multithreading
@@ -68,150 +72,159 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     
     int counts[5] = {0,0,0,0,0};
     
-    // What if you store all the values in a long long? You should be able to keep that in a single register so it would be faster. Each value could only go up to 65536
+    fastrand rand_index = InitFastRand();
+    fastrand rand_choice = InitFastRand();
     
-    // I should look up inline functions
-    // The main logic in this loop should be inline
-    
-    
-    // What if instead of current approach I have array [num_aa, num_ab, num_ba, num_bb] and said array[allele] = 1 so that I avoid an if statement? And then I add num_ab and num_ba together
-    if (thresh_bb == 65536){
-        for (int i = 0; i < next_members/15; i++){
-            int choiceEntropy = random(); // This way we can get 15 uses out of choiceEntropy. Not 16 because upper bit is always 0
-            
-#pragma clang loop unroll(full) // Takes average runtime from ~2000-2600 microseconds to 1200.
-            for (int j = 0; j < 15; j++) {
-                unsigned int indexEntropy = random() << 1; // This only produces 31 usable bytes, not 32. I have chosen to sacrifice the least significant bit.
-                char choice = choiceEntropy & 3;
-                choiceEntropy >>= 2;
-                unsigned short firstIndex = indexEntropy >> 16; // Get 16 upper bits instead of lower 15 b/c we use firstIndex more
-                
-                if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
-#ifdef DEBUG
-                    num_first += 1;
-#endif
-                    // Three groupings: > thresh_ab > thresh_aa > 0
+    for (int i = 0; i < next_members>>6; i++){
+        
+        /* This is really frustrating because we have 4 things happening on 4 timescales - each int in index being reloaded happens every decision, index being reloaded as a whole every 4,
+         new int being loaded in choice every 16 and choice being reloaded every 64. This makes for ugly af code. Hopefully the compiler figures out what I want.
+         */
+        
+        FastRand(&rand_choice);
+        
+        #pragma clang loop unroll(full)
+        for (int n = 0; n < 4; n++){
+            int choiceEntropy = rand_choice.res[n];
+            #pragma clang loop unroll(full)
+            for (int j = 0; j < 4; j++) {
+                FastRand(&rand_index);
+                #pragma clang loop unroll(full)
+                for (int k = 0; k < 4; k++){
+                    unsigned int indexEntropy = rand_index.res[k]; // This only produces 31 usable bytes, not 32. I have chosen to sacrifice the least significant bit.
+                    char choice = choiceEntropy & 3;
+                    choiceEntropy >>= 2;
+                    unsigned short firstIndex = indexEntropy >> 16; // Get 16 upper bits instead of lower 15 b/c we use firstIndex more
                     
-                    // Should shift to 0, 2, 4
-                    
-                    counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
-#ifdef DEBUG
-                    from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
-#endif // Somehow this code block being enabled causes an abort trap to fire between returning from this function and the next line of code being run because from_first wasn't large enough
-                }
-                
-                else {
-                    // there's no distinction between mother & father so ab is the same as ba
-                    unsigned short secondIndex = indexEntropy&65535; // Gets the lower 15 bits shifted to 16 - the last bit will always be 0
-#ifdef DEBUG
-                    secondIndexes[num_second] = secondIndex;
-                    num_second += 1;
-#endif
-                    char allele = 0;
-                    
-                    // Three tests for first bit: firstIndex > thresh_ab in which case it's 1. firstIndex < thresh_aa in which case it's 1. threst_aa < firstIndex < thresh_ab 50% chance
-                    if (firstIndex > thresh_ab){ // if it's a bb, then both alleles are b so result is b
-                        allele = 1;
-                    }
-                    else if (firstIndex > thresh_aa) {
-                        allele = firstIndex&1;
+                    if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
+        #ifdef DEBUG
+                        num_first += 1;
+        #endif
+                        
+                        counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
+        #ifdef DEBUG
+                        from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
+        #endif // Somehow this code block being enabled causes an abort trap to fire between returning from this function and the next line of code being run because from_first wasn't large enough
                     }
                     
-#ifdef DEBUG
-                    second_outputs[allele] += 1;
-#endif
-                    
-                    if (secondIndex > thresh_ab){ // We know second one is BB
-                        counts[allele+2] += 1;
-#ifdef DEBUG
-                        from_second[allele+2] += 1;
-                        from_second_first[allele+2] += 1; // Occur 1/4 of the time and be 1/2 2 and 1/2 3
-#endif
-                    }
-                    
-                    else if (secondIndex > thresh_aa){ // Second one is AB
-                        counts[allele+(secondIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
-                        // This used to be allele+secondIndex&2 and the &2 operated after the + so it was always 0 or 2
-#ifdef DEBUG
-                        from_second[allele+(secondIndex&2)] += 1;
-                        from_second_second[allele + (secondIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
-#endif
-                    }
-                    
-                    else { // second one is AA
-                        counts[allele] += 1;
-#ifdef DEBUG
-                        from_second[allele] += 1;
-                        from_second_third[allele] += 1;
-#endif
+                    else {
+                        // there's no distinction between mother & father so ab is the same as ba
+                        unsigned short secondIndex = indexEntropy&65535; // Gets the lower 15 bits shifted to 16 - the last bit will always be 0
+        #ifdef DEBUG
+                        secondIndexes[num_second] = secondIndex;
+                        num_second += 1;
+        #endif
+                        char allele = 0;
+                        
+                        // Three tests for first bit: firstIndex > thresh_ab in which case it's 1. firstIndex < thresh_aa in which case it's 1. threst_aa < firstIndex < thresh_ab 50% chance
+                        if (firstIndex > thresh_ab){ // if it's a bb, then both alleles are b so result is b
+                            allele = 1;
+                        }
+                        else if (firstIndex > thresh_aa) {
+                            allele = firstIndex&1;
+                        }
+                        
+        #ifdef DEBUG
+                        second_outputs[allele] += 1;
+        #endif
+                        
+                        if (secondIndex > thresh_ab){ // We know second one is BB
+                            counts[allele+2] += 1;
+        #ifdef DEBUG
+                            from_second[allele+2] += 1;
+                            from_second_first[allele+2] += 1; // Occur 1/4 of the time and be 1/2 2 and 1/2 3
+        #endif
+                        }
+                        
+                        else if (secondIndex > thresh_aa){ // Second one is AB
+                            counts[allele+(secondIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
+                            // This used to be allele+secondIndex&2 and the &2 operated after the + so it was always 0 or 2
+        #ifdef DEBUG
+                            from_second[allele+(secondIndex&2)] += 1;
+                            from_second_second[allele + (secondIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
+        #endif
+                        }
+                        
+                        else { // second one is AA
+                            counts[allele] += 1;
+        #ifdef DEBUG
+                            from_second[allele] += 1;
+                            from_second_third[allele] += 1;
+        #endif
+                        }
                     }
                 }
             }
         }
+    }
+    
+    // Finish the leftovers
+    FastRand(&rand_choice);
+    int choice_entropy = rand_choice.res[0];
+    for (int i = 0; i < next_members - ((next_members >> 6) << 6); i++){
+        if (i % 16 == 0){
+            choice_entropy = rand_choice.res[i>>4];
+        }
+        FastRand(&rand_index);
+        int indexEntropy = rand_index.res[0];
+        char choice = choice_entropy & 3;
+        choice_entropy >>= 2;
+        unsigned short firstIndex = indexEntropy >> 16; // Get 16 upper bits instead of lower 15 b/c we use firstIndex more
         
-        // Have to finish the rest
-        int choiceEntropy = random();
-        for (int j = 0; j < next_members-(next_members/15 * 15); j++){ // This most definitely needs to be unrolled
-            unsigned int indexEntropy = random() << 1; // This only produces 31 usable bytes, not 32. I have chosen to sacrifice the least significant bit.
-            char choice = choiceEntropy & 3;
-            choiceEntropy >>= 2;
-            unsigned short firstIndex = indexEntropy >> 16; // Get 16 upper bits instead of lower 15 b/c we use firstIndex more
-            
-            if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
-                
-                
-                counts[2 >> ((firstIndex<thresh_aa)+(firstIndex<thresh_ab))] += 1;
+        if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
 #ifdef DEBUG
-                from_first[2 >> ((firstIndex<thresh_aa)+(firstIndex<thresh_ab))] += 1;
-                num_first += 1;
+            num_first += 1;
+#endif
+            counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
+#ifdef DEBUG
+            from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
+#endif // Somehow this code block being enabled causes an abort trap to fire between returning from this function and the next line of code being run because from_first wasn't large enough
+        }
+        
+        else {
+            // there's no distinction between mother & father so ab is the same as ba
+            unsigned short secondIndex = indexEntropy&65535; // Gets the lower 15 bits shifted to 16 - the last bit will always be 0
+#ifdef DEBUG
+            secondIndexes[num_second] = secondIndex;
+            num_second += 1;
+#endif
+            char allele = 0;
+            
+            // Three tests for first bit: firstIndex > thresh_ab in which case it's 1. firstIndex < thresh_aa in which case it's 1. threst_aa < firstIndex < thresh_ab 50% chance
+            if (firstIndex > thresh_ab){ // if it's a bb, then both alleles are b so result is b
+                allele = 1;
+            }
+            else if (firstIndex > thresh_aa) {
+                allele = firstIndex&1;
+            }
+            
+#ifdef DEBUG
+            second_outputs[allele] += 1;
+#endif
+            
+            if (secondIndex > thresh_ab){ // We know second one is BB
+                counts[allele+2] += 1;
+#ifdef DEBUG
+                from_second[allele+2] += 1;
+                from_second_first[allele+2] += 1; // Occur 1/4 of the time and be 1/2 2 and 1/2 3
 #endif
             }
             
-            else {
-                // there's no distinction between mother & father so ab is the same as ba
-                unsigned short secondIndex = indexEntropy&65535; // Gets the lower 15 bits shifted to 16 - the last bit will always be 0
+            else if (secondIndex > thresh_aa){ // Second one is AB
+                counts[allele+(secondIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
+                // This used to be allele+secondIndex&2 and the &2 operated after the + so it was always 0 or 2
 #ifdef DEBUG
-                secondIndexes[num_second] = secondIndex;
-                num_second += 1;
+                from_second[allele+(secondIndex&2)] += 1;
+                from_second_second[allele + (secondIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
 #endif
-                char allele = 0;
-                
-                // Three tests for first bit: firstIndex > thresh_ab in which case it's 1. firstIndex < thresh_aa in which case it's 1. threst_aa < firstIndex < thresh_ab 50% chance
-                if (firstIndex > thresh_ab){ // if it's a bb, then both alleles are b so result is b
-                    allele = 1;
-                }
-                else if (firstIndex > thresh_aa) {
-                    allele = firstIndex&1;
-                }
-                
+            }
+            
+            else { // second one is AA
+                counts[allele] += 1;
 #ifdef DEBUG
-                second_outputs[allele] += 1;
+                from_second[allele] += 1;
+                from_second_third[allele] += 1;
 #endif
-                
-                if (secondIndex > thresh_ab){ // We know second one is BB
-                    counts[allele+2] += 1;
-#ifdef DEBUG
-                    from_second[allele+2] += 1;
-                    from_second_first[allele+2] += 1; // Occur 1/4 of the time and be 1/2 2 and 1/2 3
-#endif
-                }
-                
-                else if (secondIndex > thresh_aa){ // Second one is AB
-                    counts[allele+(secondIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
-                    // This used to be allele+secondIndex&2 and the &2 operated after the + so it was always 0 or 2
-#ifdef DEBUG
-                    from_second[allele+(secondIndex&2)] += 1;
-                    from_second_second[allele + (secondIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
-#endif
-                }
-                
-                else { // second one is AA
-                    counts[allele] += 1;
-#ifdef DEBUG
-                    from_second[allele] += 1;
-                    from_second_third[allele] += 1;
-#endif
-                }
             }
         }
     }
@@ -245,7 +258,7 @@ void * pthread_handler(void* args){
     int thresh_bb = myinfo.thresh_bb;
     int num_generations = myinfo.num_generations;
     int next_members = myinfo.next_members;
-    int *results = myinfo.results;
+    unsigned int *results = myinfo.results;
     int *alldone = myinfo.alldone;
     int thread_id = myinfo.thread_id;
     sem_t *semaphore = myinfo.semaphore;
@@ -349,11 +362,8 @@ int main(int argc, char **argv){
     int thresh_aa = initial_values[0];
     int thresh_ab = thresh_aa + initial_values[1];
     int thresh_bb = thresh_ab + initial_values[2];
-/*    int thresh_aa = 16000;
-    int thresh_ab = 49536;
-    int thresh_bb = 65536;*/
     int **results = malloc(num_generations*3*sizeof(int));
-    int result[3] = {0,0,0};
+    int result[3] = {0,0,0};    
 #ifdef THREADED
     unsigned int *thread_results = malloc(num_generations*sizeof(int)*3);
     memset(thread_results, 0, num_generations*sizeof(int)*3); // Sometimes it has random pieces of data. It shouldn't and this is an easy way to fix that.
