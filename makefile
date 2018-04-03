@@ -4,6 +4,10 @@ debug:
 	clang -Ofast generations.c -msse4.2 -D DEBUG=true -o bio
 speedtest:
 	clang -Ofast generations.c -msse4.2 -D SPEEDTEST=true -o bio
+unoptimized_speedtest:
+	clang -O0 generations.c -msse4.2 -D SPEEDTEST=true -o bio
+speeddebug:
+	clang -Ofast generations.c -msse4.2 -D SPEEDTEST=true -g -o bio
 threaded:
 	clang -Ofast generations.c -msse4.2 -D THREADED=true -o bio
 threaded_debug:

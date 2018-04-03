@@ -1,3 +1,4 @@
+
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -10,6 +11,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <x86intrin.h>
+
 #include "fast_rand.h"
 
 // Benchmark as of 3/20: (microseconds / generation of 65536)
@@ -19,19 +21,7 @@
 // 3/27 replacement of rand function with FastRand() gives us 1005
 // 3/27 replacing reading from /dev/random with seeding random() from /dev/random and then using random() saved 15 microseconds / generation
 
-
 // Todo: multithreading
-
-
-/*
- * Each organism is going to be represented as a char. We could be more efficient - slightly so at least - by putting 4 organisms in each char. However, I believe this would be computationally
- * inefficient, because you would have to do a lot of ORs to get each individual organism. Perhaps if memory bandwidth is the limiting factor this would be useful.
- * The L2 cache is 256KB. Perhaps we could try to store everything in L2 cache.
- 
- * Wow so I thought initially I would have to get all my stuff from /dev/random, so I was limited to 10 bytes/microsecond. Then I remebered the other rand functions, so I thought I could get
- * use those, and it turns out rand() would have given me 360 bytes / microsecond, 1.5 orders of magnitude faster. Then random() is twice as fast as that - it gives me 755 bytes/microsecond. Wow!
- * Doing the math, it seems that random() returns in something like 6.87 cycles on average, which is incredibly fast.
- */
 
 struct threadinfo {
     int thresh_aa;
@@ -91,10 +81,10 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
                 FastRand(&rand_index);
                 #pragma clang loop unroll(full)
                 for (int k = 0; k < 4; k++){
-                    unsigned int indexEntropy = rand_index.res[k]; // This only produces 31 usable bytes, not 32. I have chosen to sacrifice the least significant bit.
+                    unsigned int indexEntropy = rand_index.res[k];
                     char choice = choiceEntropy & 3;
                     choiceEntropy >>= 2;
-                    unsigned short firstIndex = indexEntropy >> 16; // Get 16 upper bits instead of lower 15 b/c we use firstIndex more
+                    unsigned short firstIndex = indexEntropy >> 16;
                     
                     if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
         #ifdef DEBUG
@@ -104,7 +94,7 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
                         counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
         #ifdef DEBUG
                         from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
-        #endif // Somehow this code block being enabled causes an abort trap to fire between returning from this function and the next line of code being run because from_first wasn't large enough
+        #endif
                     }
                     
                     else {
@@ -162,64 +152,54 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     FastRand(&rand_choice);
     int choice_entropy = rand_choice.res[0];
     for (int i = 0; i < next_members - ((next_members >> 6) << 6); i++){
-        if (i % 16 == 0){
+        if (i % 16 == 0){ // This is sort've hacky and not efficient on a larger scale, but whatever
             choice_entropy = rand_choice.res[i>>4];
         }
         FastRand(&rand_index);
         int indexEntropy = rand_index.res[0];
         char choice = choice_entropy & 3;
         choice_entropy >>= 2;
-        unsigned short firstIndex = indexEntropy >> 16; // Get 16 upper bits instead of lower 15 b/c we use firstIndex more
-        
-        if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
+        unsigned short firstIndex = indexEntropy >> 16;
+        if (choice == 0 || choice == 3){
 #ifdef DEBUG
             num_first += 1;
 #endif
             counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
 #ifdef DEBUG
             from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
-#endif // Somehow this code block being enabled causes an abort trap to fire between returning from this function and the next line of code being run because from_first wasn't large enough
+#endif
         }
-        
         else {
-            // there's no distinction between mother & father so ab is the same as ba
-            unsigned short secondIndex = indexEntropy&65535; // Gets the lower 15 bits shifted to 16 - the last bit will always be 0
+            unsigned short secondIndex = indexEntropy&65535;
 #ifdef DEBUG
             secondIndexes[num_second] = secondIndex;
             num_second += 1;
 #endif
             char allele = 0;
-            
-            // Three tests for first bit: firstIndex > thresh_ab in which case it's 1. firstIndex < thresh_aa in which case it's 1. threst_aa < firstIndex < thresh_ab 50% chance
-            if (firstIndex > thresh_ab){ // if it's a bb, then both alleles are b so result is b
+            if (firstIndex > thresh_ab){
                 allele = 1;
             }
             else if (firstIndex > thresh_aa) {
                 allele = firstIndex&1;
             }
-            
 #ifdef DEBUG
             second_outputs[allele] += 1;
 #endif
-            
-            if (secondIndex > thresh_ab){ // We know second one is BB
+            if (secondIndex > thresh_ab){
                 counts[allele+2] += 1;
 #ifdef DEBUG
                 from_second[allele+2] += 1;
-                from_second_first[allele+2] += 1; // Occur 1/4 of the time and be 1/2 2 and 1/2 3
+                from_second_first[allele+2] += 1;
 #endif
             }
-            
-            else if (secondIndex > thresh_aa){ // Second one is AB
-                counts[allele+(secondIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
-                // This used to be allele+secondIndex&2 and the &2 operated after the + so it was always 0 or 2
+            else if (secondIndex > thresh_aa){
+                counts[allele+(secondIndex&2)] += 1;
 #ifdef DEBUG
                 from_second[allele+(secondIndex&2)] += 1;
-                from_second_second[allele + (secondIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
+                from_second_second[allele + (secondIndex&2)] += 1;
 #endif
             }
-            
-            else { // second one is AA
+            else {
                 counts[allele] += 1;
 #ifdef DEBUG
                 from_second[allele] += 1;
@@ -248,7 +228,6 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     result[0] = counts[0];
     result[1] = counts[1] + counts[2];
     result[2] = counts[3] + counts[4];
-    return;
 }
 
 void * pthread_handler(void* args){
@@ -345,18 +324,26 @@ void initialize_generation(int number, int* gen){ // 14 milliseconds faster on g
 }
 
 int main(int argc, char **argv){
-    srandomdev(); // Seeds random() using information from /dev/random
-    int num_organisms = 65536;
+    int num_organisms = 0;
+    int num_generations = 0;
+    if (argc < 3){
+        num_organisms = 65536;
 #ifdef DEBUG
-    int num_generations = 5;
+        num_generations = 5;
 #else
 #ifdef THREADED
-    int num_generations = 10000;
+        num_generations = 10000;
 #else
-    int num_generations = 1000;
+        num_generations = 10000;
 #endif
 #endif
-    printf("Beginning simulation of %d organisms for %d generations\n",num_organisms,num_generations);
+    }
+    else {
+        num_organisms = atoi(argv[1]);
+        num_generations = atoi(argv[2]);
+    }
+    printf("Simulating %d organisms for %d generations\n",num_organisms,num_generations);
+    srandomdev(); // Seeds random() using information from /dev/random
     int initial_values[3];
     initialize_generation(num_organisms,initial_values);
     int thresh_aa = initial_values[0];
@@ -417,7 +404,7 @@ int main(int argc, char **argv){
         printf("aa: %d ab: %d bb: %d\n",result[0],result[1],result[2]);
         thresh_aa = result[0];
         thresh_ab = thresh_aa + result[1];
-        thresh_bb = thresh_ab + result[2]; // THESE WILL ALL NOT FUNCTION BECAUSE PROGRESS_GENERATION DOES += NOT = ON RESULT
+        thresh_bb = thresh_ab + result[2];
         results[i] = result;
     }
 #else
@@ -448,11 +435,15 @@ int main(int argc, char **argv){
     }
     printf("Took on average %d microseconds per 1000 generationss or %d microseconds per generation\n",average/20,average/20000);
 #else
+    char *filename = "results";
+    if (argc == 4){
+        filename = argv[3];
+    }
+    printf("Writing results to %s\n",filename);
+    int fd = open(filename,O_CREAT | O_WRONLY, 0777);
+    char *format_string = "aa: %d\tab:%d\tbb:%d\n";
+    char *write_string = malloc(200);
     for (int i = 0; i < num_generations/100; i++){
-        struct timeval start;
-        struct timeval end;
-        gettimeofday(&start,NULL);
-#pragma clang loop unroll(full)
         for (int j = 0; j < 100; j++) {
             progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms,result);
             thresh_aa = result[0];
@@ -460,10 +451,10 @@ int main(int argc, char **argv){
             thresh_bb = thresh_ab + result[2];
             results[i*100 + j] = result;
         }
-        gettimeofday(&end,NULL);
-        printf("%ld microseconds\t",(1000000 * end.tv_sec + end.tv_usec) -  (1000000 * start.tv_sec + start.tv_usec));
-        printf("aa: %d\tab:%d\tbb:%d\n",result[0],result[1],result[2]);
+        int string_length = sprintf(write_string, format_string, result[0], result[1], result[2]);
+        write(fd, write_string, string_length);
     }
+    close(fd);
 #endif
 #endif
 #endif
