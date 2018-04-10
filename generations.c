@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <x86intrin.h>
+#include <sys/stat.h>
 
 #include "fast_rand.h"
 
@@ -21,7 +22,8 @@
 // 3/27 replacement of rand function with FastRand() gives us 1005
 // 3/27 replacing reading from /dev/random with seeding random() from /dev/random and then using random() saved 15 microseconds / generation
 
-// Todo: multithreading
+// Todo: multithreading. Only two cores so not much potential.
+// Maybe you could have a random number generating core and a decision core
 
 struct threadinfo {
     int thresh_aa;
@@ -85,6 +87,13 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
                     char choice = choiceEntropy & 3;
                     choiceEntropy >>= 2;
                     unsigned short firstIndex = indexEntropy >> 16;
+                    
+                    /* Asm:
+                     * and    cl, 3; This does choiceEntropy&3 and also sets ZF if cl is now equal to 0
+                     * je    LBB1_4; This jumps if ZF is 0. LBBI_4 just skips past this area
+                     * cmp    cl, 3
+                     * jne LBBI_12
+                     */
                     
                     if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
         #ifdef DEBUG
@@ -355,7 +364,6 @@ int main(int argc, char **argv){
     unsigned int *thread_results = malloc(num_generations*sizeof(int)*3);
     memset(thread_results, 0, num_generations*sizeof(int)*3); // Sometimes it has random pieces of data. It shouldn't and this is an easy way to fix that.
     int alldone = 0;
-    num_organisms = (num_organisms<<2)>>2; // needs to be multiple of 4
     sem_t *semaphore;
     if ((semaphore = sem_open("/semaphore", O_CREAT, 0644, 1)) == SEM_FAILED ) { // from https://heldercorreia.com/semaphores-in-mac-os-x-fd7a7418e13b
         perror("sem_open");
@@ -435,14 +443,21 @@ int main(int argc, char **argv){
     }
     printf("Took on average %d microseconds per 1000 generationss or %d microseconds per generation\n",average/20,average/20000);
 #else
-    char *filename = "results";
+    char *fifoname = "results";
     if (argc == 4){
-        filename = argv[3];
+        fifoname = argv[3];
     }
-    printf("Writing results to %s\n",filename);
-    int fd = open(filename,O_CREAT | O_WRONLY, 0777);
+    
+    if (mkfifo(fifoname, 0777) == -1){
+        printf("Failure in making fifo: %s\n",strerror(errno));
+    }
+    
+    int fd = open(fifoname, O_WRONLY);
+    
+    printf("Writing results to FIFO device %s with fd %d\n",fifoname,fd);
     char *format_string = "aa: %d\tab:%d\tbb:%d\n";
     char *write_string = malloc(200);
+    
     for (int i = 0; i < num_generations/100; i++){
         for (int j = 0; j < 100; j++) {
             progress_generation(thresh_aa, thresh_ab, thresh_bb, num_organisms,result);
@@ -453,6 +468,12 @@ int main(int argc, char **argv){
         }
         int string_length = sprintf(write_string, format_string, result[0], result[1], result[2]);
         write(fd, write_string, string_length);
+        if (result[0] == 0 || result[2] == 0){ // Totally shifted to one side or the other
+            for (int j = i; j < num_generations/100; j++){
+                write(fd, write_string, string_length);
+            }
+            break;
+        }
     }
     close(fd);
 #endif
