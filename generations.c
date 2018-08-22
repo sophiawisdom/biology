@@ -21,6 +21,8 @@
 //  After optimizations: 1160, 1115, 1094
 // 3/27 replacement of rand function with FastRand() gives us 1005
 // 3/27 replacing reading from /dev/random with seeding random() from /dev/random and then using random() saved 15 microseconds / generation
+// 8/20 - with clang, on dad's newer computer, 850 microseconds/generation. Replace clang with GCC,
+// 600 microseconds/generation.
 
 // Todo: multithreading. Only two cores so not much potential.
 // Maybe you could have a random number generating core and a decision core
@@ -52,7 +54,7 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     int from_second_third[4] = {0,0,0,0};
     int second_outputs[2] = {0,0};
     
-    short *secondIndexes = malloc(35000*sizeof(short));
+    short *secondIndexes = (short *)malloc(35000*sizeof(short));
     
     int num_first = 0;
     int num_second = 0;
@@ -66,156 +68,87 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     
     fastrand rand_index = InitFastRand();
     fastrand rand_choice = InitFastRand();
-    
-    for (int i = 0; i < next_members>>6; i++){
-        
-        /* This is really frustrating because we have 4 things happening on 4 timescales - each int in index being reloaded happens every decision, index being reloaded as a whole every 4,
-         new int being loaded in choice every 16 and choice being reloaded every 64. This makes for ugly af code. Hopefully the compiler figures out what I want.
-         */
-        
-        FastRand(&rand_choice);
-        
-        #pragma clang loop unroll(full)
-        for (int n = 0; n < 4; n++){
-            int choiceEntropy = rand_choice.res[n];
-            #pragma clang loop unroll(full)
-            for (int j = 0; j < 4; j++) {
-                FastRand(&rand_index);
-                #pragma clang loop unroll(full)
-                for (int k = 0; k < 4; k++){
-                    unsigned int indexEntropy = rand_index.res[k];
-                    char choice = choiceEntropy & 3;
-                    choiceEntropy >>= 2;
-                    unsigned short firstIndex = indexEntropy >> 16;
-                    
-                    /* Asm:
-                     * and    cl, 3; This does choiceEntropy&3 and also sets ZF if cl is now equal to 0
-                     * je    LBB1_4; This jumps if ZF is 0. LBBI_4 just skips past this area
-                     * cmp    cl, 3
-                     * jne LBBI_12
-                     */
-                    
-                    if (choice == 0 || choice == 3){ // Both bits from one parent, doesn't matter which
-        #ifdef DEBUG
-                        num_first += 1;
-        #endif
-                        
-                        counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
-        #ifdef DEBUG
-                        from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
-        #endif
-                    }
-                    
-                    else {
-                        // there's no distinction between mother & father so ab is the same as ba
-                        unsigned short secondIndex = indexEntropy&65535; // Gets the lower 15 bits shifted to 16 - the last bit will always be 0
-        #ifdef DEBUG
-                        secondIndexes[num_second] = secondIndex;
-                        num_second += 1;
-        #endif
-                        char allele = 0;
-                        
-                        // Three tests for first bit: firstIndex > thresh_ab in which case it's 1. firstIndex < thresh_aa in which case it's 1. threst_aa < firstIndex < thresh_ab 50% chance
-                        if (firstIndex > thresh_ab){ // if it's a bb, then both alleles are b so result is b
-                            allele = 1;
-                        }
-                        else if (firstIndex > thresh_aa) {
-                            allele = firstIndex&1;
-                        }
-                        
-        #ifdef DEBUG
-                        second_outputs[allele] += 1;
-        #endif
-                        
-                        if (secondIndex > thresh_ab){ // We know second one is BB
-                            counts[allele+2] += 1;
-        #ifdef DEBUG
-                            from_second[allele+2] += 1;
-                            from_second_first[allele+2] += 1; // Occur 1/4 of the time and be 1/2 2 and 1/2 3
-        #endif
-                        }
-                        
-                        else if (secondIndex > thresh_aa){ // Second one is AB
-                            counts[allele+(secondIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
-                            // This used to be allele+secondIndex&2 and the &2 operated after the + so it was always 0 or 2
-        #ifdef DEBUG
-                            from_second[allele+(secondIndex&2)] += 1;
-                            from_second_second[allele + (secondIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
-        #endif
-                        }
-                        
-                        else { // second one is AA
-                            counts[allele] += 1;
-        #ifdef DEBUG
-                            from_second[allele] += 1;
-                            from_second_third[allele] += 1;
-        #endif
-                        }
-                    }
-                }
-            }
-        }
+	/*
+	* This is a little bit complicated. In the old way, the choice over whether to have both bits
+	* come from one parent or not was made more or less on the fly, which costs a shr and most 
+	* importantly, an evil evil branch on every iteration. This branch was so awful because if the
+	* random number generator is good, it is unpredictable, which means you have a branch miss half
+	* of the time. Instead, we can refactor the decision making so it happens up here. What that means
+	* is that we decide ahead of time how many have both bits come from one parent and how many
+	* have one bit from each parent. This means that we don't have a branch in a loop here - there's
+	* only the loop branch, which should have >99% prediction. This should make the code much faster.
+	*/
+    int both_one_parent = 0;
+    for (int i = 0; i < (next_members>>7); i += 1){ // FastRand is 128 bits = 2^7 members per fastrand
+    	FastRand(&rand_choice);
+    	both_one_parent += __builtin_popcountll(* (rand_choice.res)) + 
+    					   __builtin_popcountll(* (rand_choice.res+2)); // hopefully the compiler gets it
     }
-    
-    // Finish the leftovers
-    FastRand(&rand_choice);
-    int choice_entropy = rand_choice.res[0];
-    for (int i = 0; i < next_members - ((next_members >> 6) << 6); i++){
-        if (i % 16 == 0){ // This is sort've hacky and not efficient on a larger scale, but whatever
-            choice_entropy = rand_choice.res[i>>4];
-        }
-        FastRand(&rand_index);
-        int indexEntropy = rand_index.res[0];
-        char choice = choice_entropy & 3;
-        choice_entropy >>= 2;
-        unsigned short firstIndex = indexEntropy >> 16;
-        if (choice == 0 || choice == 3){
 #ifdef DEBUG
-            num_first += 1;
+    num_first = both_one_parent;
+    num_second = next_members-both_one_parent;
+    printf("%d first and %d second.\n",num_first,num_second);
 #endif
-            counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
+    unsigned short *short_res = (unsigned short *)rand_index.res;
+
+    for (int i = 0; i < (both_one_parent>>3); i++){
+    	FastRand(&rand_index);
+    	for (int k = 0; k < 8; k++){
+    		unsigned short firstIndex = short_res[k];
+    		counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
 #ifdef DEBUG
-            from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
+			from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
 #endif
-        }
-        else {
-            unsigned short secondIndex = indexEntropy&65535;
-#ifdef DEBUG
-            secondIndexes[num_second] = secondIndex;
-            num_second += 1;
-#endif
-            char allele = 0;
-            if (firstIndex > thresh_ab){
+    	}
+    	// For ones where we know both bits come from one parent        
+    }
+
+    for (int i = 0; i < ((next_members-both_one_parent)>>2); i++) {
+    	FastRand(&rand_index);
+    	for (int k = 0; k < 8; k++){
+    		unsigned short firstIndex = short_res[k];
+    		k += 1;
+    		unsigned short secondIndex = short_res[k];
+    		char allele = 0;
+                        
+            // Three tests for first bit: firstIndex > thresh_ab in which case it's 1. firstIndex < thresh_aa in which case it's 1. threst_aa < firstIndex < thresh_ab 50% chance
+            if (firstIndex > thresh_ab) { // if it's a bb, then both alleles are b so result is b
                 allele = 1;
             }
             else if (firstIndex > thresh_aa) {
-                allele = firstIndex&1;
+                allele = firstIndex&1; // subtle small error. change to secondIndex?
             }
-#ifdef DEBUG
-            second_outputs[allele] += 1;
-#endif
-            if (secondIndex > thresh_ab){
+                        
+        	#ifdef DEBUG
+                second_outputs[allele] += 1;
+        	#endif
+                        
+            if (secondIndex > thresh_ab) { // We know second one is BB
                 counts[allele+2] += 1;
-#ifdef DEBUG
-                from_second[allele+2] += 1;
-                from_second_first[allele+2] += 1;
-#endif
+
+        		#ifdef DEBUG
+                	from_second[allele+2] += 1;
+                    from_second_first[allele+2] += 1; // Occur 1/4 of the time and be 1/2 2 and 1/2 3
+        		#endif
             }
-            else if (secondIndex > thresh_aa){
-                counts[allele+(secondIndex&2)] += 1;
-#ifdef DEBUG
-                from_second[allele+(secondIndex&2)] += 1;
-                from_second_second[allele + (secondIndex&2)] += 1;
-#endif
+                        
+            else if (secondIndex > thresh_aa) { // Second one is AB
+                counts[allele+(secondIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
+                // This used to be allele+secondIndex&2 and the &2 operated after the + so it was always 0 or 2
+        		#ifdef DEBUG
+                    from_second[allele+(secondIndex&2)] += 1;
+                    from_second_second[allele + (secondIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
+        		#endif
             }
-            else {
+                        
+            else { // second one is AA
                 counts[allele] += 1;
-#ifdef DEBUG
-                from_second[allele] += 1;
-                from_second_third[allele] += 1;
-#endif
+        		#ifdef DEBUG
+                   from_second[allele] += 1;
+                   from_second_third[allele] += 1;
+        		#endif
             }
-        }
+    	}
     }
     
 #ifdef DEBUG

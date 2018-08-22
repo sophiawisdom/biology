@@ -14,3 +14,5 @@ threaded_debug:
 	/usr/local/cellar/gcc/8.2.0/bin/c++-8 -Ofast generations.c -msse4.2 -D THREADED=true -D DEBUG=true -o bio
 rand_test:
 	/usr/local/cellar/gcc/8.2.0/bin/c++-8 -Ofast -msse4.2 -mrdrnd test_rand_speed.c -o test_rand_speed
+faster:
+	/usr/local/cellar/gcc/8.2.0/bin/c++-8 -Ofast -msse4.2 faster.c -o faster
