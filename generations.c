@@ -351,14 +351,16 @@ int main(int argc, char **argv){
         num_organisms = atoi(argv[1]);
         num_generations = atoi(argv[2]);
     }
+#ifndef SPEEDTEST
     printf("Simulating %d organisms for %d generations\n",num_organisms,num_generations);
+#endif
     srandomdev(); // Seeds random() using information from /dev/random
     int initial_values[3];
     initialize_generation(num_organisms,initial_values);
     int thresh_aa = initial_values[0];
     int thresh_ab = thresh_aa + initial_values[1];
     int thresh_bb = thresh_ab + initial_values[2];
-    int **results = malloc(num_generations*3*sizeof(int));
+    int **results = (int **) malloc(num_generations*3*sizeof(int));
     int result[3] = {0,0,0};    
 #ifdef THREADED
     unsigned int *thread_results = malloc(num_generations*sizeof(int)*3);
@@ -456,7 +458,7 @@ int main(int argc, char **argv){
     
     printf("Writing results to FIFO device %s with fd %d\n",fifoname,fd);
     char *format_string = "aa: %d\tab:%d\tbb:%d\n";
-    char *write_string = malloc(200);
+    char *write_string = (char *) malloc(200);
     
     for (int i = 0; i < num_generations/100; i++){
         for (int j = 0; j < 100; j++) {
