@@ -1,4 +1,5 @@
-#Fast hardy-weinstein equilibrium simulation
+# Fast Hardy-Weinberg equilibrium simulation
+
 This project contains two versions of hardy-weinstein equilibrium simulation:
   1. Relatively slow and easy to make python implementation, located in generations.py. Benchmarks are listed at the top of generations.py. The average is something like 150k 'matings' per second. The advantage to using this is that it is very flexible.
   2. Relatively fast and much more difficult to make C implementation, located in generations.c. Current benchmark is 172m 'matings' per second. However, it is less flexible due to being written in C. There is a wrapper located in generations_controller.py that currently doesn't work but in theory pipes output to the C output and graphs it live in matplotlib.
