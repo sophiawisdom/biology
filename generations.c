@@ -65,6 +65,10 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
 #endif
     
     int counts[5] = {0,0,0,0,0};
+    int offset = 65536/next_members;
+    thresh_aa *= offset;
+    thresh_ab *= offset;
+    thresh_bb *= offset;
     
     fastrand rand_index = InitFastRand();
     fastrand rand_choice = InitFastRand();
@@ -95,6 +99,12 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     	FastRand(&rand_index);
     	for (int k = 0; k < 8; k++){
     		unsigned short firstIndex = short_res[k];
+    		/*
+    		char lt_thresh_aa = (firstIndex < thresh_aa) << 1;
+    		char lt_thresh_ab = (firstIndex < thresh_ab) << 1;
+    		char index = 4 >> (lt_thresh_aa + lt_thresh_ab);
+    		counts[index] += 1;
+    		*/
     		counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
 #ifdef DEBUG
 			from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
@@ -283,6 +293,9 @@ int main(int argc, char **argv){
     else {
         num_organisms = atoi(argv[1]);
         num_generations = atoi(argv[2]);
+        if (__builtin_popcount(num_organisms) != 1){
+        	printf("num_organisms must be a multiple of 2\n");
+        }
     }
 #ifndef SPEEDTEST
     printf("Simulating %d organisms for %d generations\n",num_organisms,num_generations);
