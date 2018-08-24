@@ -1,4 +1,4 @@
-bio:
+standard:
 	/usr/local/cellar/gcc/8.2.0/bin/gcc-8 -Ofast generations.c -msse4.2 -o bio
 debug:
 	/usr/local/cellar/gcc/8.2.0/bin/gcc-8 -Ofast generations.c -msse4.2 -D DEBUG=true -o bio

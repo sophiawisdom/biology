@@ -65,10 +65,13 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
 #endif
     
     int counts[5] = {0,0,0,0,0};
-    int offset = 65536/next_members;
-    thresh_aa *= offset;
-    thresh_ab *= offset;
-    thresh_bb *= offset;
+    if (next_members != 65536){
+    	double offset = 65536/next_members;
+    	thresh_aa *= offset;
+    	thresh_ab *= offset;
+    	thresh_bb *= offset;
+    	printf("next_members != 65536\n");
+    }
     
     fastrand rand_index = InitFastRand();
     fastrand rand_choice = InitFastRand();
@@ -94,26 +97,29 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     printf("%d first and %d second.\n",num_first,num_second);
 #endif
     unsigned short *short_res = (unsigned short *)rand_index.res;
+    // normally rand_index.res would be typed as an int *, though really it's a 128 bit register
+    // location. Unsigned shorts cover the 0-65536 range. I could handle ints also, but it would be
+    // something like half as fast.
 
+    // For ones where both bits come from one parent
     for (int i = 0; i < (both_one_parent>>3); i++){
     	FastRand(&rand_index);
     	for (int k = 0; k < 8; k++){
     		unsigned short firstIndex = short_res[k];
-    		/*
-    		char lt_thresh_aa = (firstIndex < thresh_aa) << 1;
-    		char lt_thresh_ab = (firstIndex < thresh_ab) << 1;
-    		char index = 4 >> (lt_thresh_aa + lt_thresh_ab);
-    		counts[index] += 1;
-    		*/
-    		counts[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
+    		counts[(firstIndex < thresh_aa) + (firstIndex < thresh_ab)] += 1;
+    		// 0 = bb, 1 = ab, 2 = aa
 #ifdef DEBUG
-			from_first[4 >> (((firstIndex<thresh_aa)<<1)+(firstIndex<thresh_ab))] += 1;
+			from_first[(firstIndex < thresh_aa) + (firstIndex < thresh_ab)] += 1;
 #endif
     	}
-    	// For ones where we know both bits come from one parent        
     }
+    counts[3] = counts[0];
+    counts[0] = counts[2];
+    counts[2] = 0;
+    // Counts output: 0: aa 1: ab 2: ab 3: bb 4: bb , so we have to fiddle around a bit
 
     for (int i = 0; i < ((next_members-both_one_parent)>>2); i++) {
+    	// >> 2 and not 3 because the cycle only gives 4 results, not 8, because it needs 32 bits
     	FastRand(&rand_index);
     	for (int k = 0; k < 8; k++){
     		unsigned short firstIndex = short_res[k];
@@ -126,7 +132,7 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
                 allele = 1;
             }
             else if (firstIndex > thresh_aa) {
-                allele = firstIndex&1; // subtle small error. change to secondIndex?
+                allele = secondIndex&1; // subtle small error. change to secondIndex?
             }
                         
         	#ifdef DEBUG
@@ -143,11 +149,11 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
             }
                         
             else if (secondIndex > thresh_aa) { // Second one is AB
-                counts[allele+(secondIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
+                counts[allele+(firstIndex&2)] += 1; // This used to be firstIndex. This caused an insidious bug where aa and bb were relatively favored 10:12:10 when they should be 8:16:8
                 // This used to be allele+secondIndex&2 and the &2 operated after the + so it was always 0 or 2
         		#ifdef DEBUG
-                    from_second[allele+(secondIndex&2)] += 1;
-                    from_second_second[allele + (secondIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
+                    from_second[allele+(firstIndex&2)] += 1;
+                    from_second_second[allele + (firstIndex&2)] += 1; // Should encounter 0 50% of time and 1 50% of time and give 2 50% of time and 0 50% of time. Should be 25% for all
         		#endif
             }
                         
@@ -164,7 +170,7 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
 #ifdef DEBUG
     from_second[1] += from_second[2];
     from_second[2] = from_second[3];
-    
+    // aa: 0, 
     gettimeofday(&end,NULL);
     printf("Took %ld microseconds to progress generation\n",(1000000 * end.tv_sec + end.tv_usec) -  (1000000 * start.tv_sec + start.tv_usec));
     printf("From first aa: %d from second %d. From first ab: %d from second: %d. From first bb: %d from second %d\n",from_first[0],from_second[0],from_first[2],from_second[1],from_first[4],from_second[2]);
@@ -177,9 +183,10 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     printf("0: %d, 1: %d, 2: %d 3: %d\n",counts[0],counts[1],counts[2],counts[3]);
 #endif
 #endif
-    result[0] = counts[0];
-    result[1] = counts[1] + counts[2];
-    result[2] = counts[3] + counts[4];
+    // 0: aa 1: ab 2: ab 3: bb 4: bb
+    result[0] = counts[0]; // aa
+    result[1] = counts[1] + counts[2]; // ab
+    result[2] = counts[3] + counts[4]; // bb
 }
 
 void * pthread_handler(void* args){
@@ -282,12 +289,9 @@ int main(int argc, char **argv){
         num_organisms = 65536;
 #ifdef DEBUG
         num_generations = 5;
-#else
-#ifdef THREADED
-        num_generations = 10000;
-#else
-        num_generations = 10000;
 #endif
+#ifdef SPEEDTEST
+        num_generations = 1000;
 #endif
     }
     else {
@@ -295,6 +299,7 @@ int main(int argc, char **argv){
         num_generations = atoi(argv[2]);
         if (__builtin_popcount(num_organisms) != 1){
         	printf("num_organisms must be a multiple of 2\n");
+        	exit(1);
         }
     }
 #ifndef SPEEDTEST

@@ -3,6 +3,7 @@ import threading
 import random
 import string
 import os
+from os.path import expanduser
 import sys
 import time
 import numpy as np
@@ -14,7 +15,7 @@ def auto_plot(num_generations,num_organisms,fifoname=None):
 
 	if fifoname == None:
 		fifoname = ''.join([random.choice(string.ascii_letters) for a in range(10)])
-	args = ["/users/wisdomw18/biology/bio",str(num_organisms),str(num_generations),fifoname]
+	args = [os.getcwd() + "/bio",str(num_organisms),str(num_generations),fifoname]
 	threading.Thread(target=subprocess.run,args=(args,)).start()
 
 	num_frames = int(num_generations/100)
@@ -24,6 +25,7 @@ def auto_plot(num_generations,num_organisms,fifoname=None):
 
 	def animate(i):
 		nonlocal results
+		print("Ran animate")
 
 		result = file.readline()
 		if result == "":
