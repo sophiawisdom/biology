@@ -288,7 +288,7 @@ void initialize_generation(int number, int* gen){ // 14 milliseconds faster on g
 
 void fill_random_state_buffers(){
 	int fd = open("/dev/urandom",O_RDONLY);
-	char buffer = malloc(256+4);
+	char * buffer = malloc(256+4);
 	read(fd,buffer,256+4);
 	close(fd);
 	unsigned int seed = (unsigned int) *buffer;
