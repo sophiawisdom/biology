@@ -91,18 +91,22 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     	both_one_parent += __builtin_popcountll(* (rand_choice.res)) + 
     					   __builtin_popcountll(* (rand_choice.res+2)); // hopefully the compiler gets it
     }
+//    both_one_parent = 0;
 #ifdef DEBUG
     num_first = both_one_parent;
     num_second = next_members-both_one_parent;
     printf("%d first and %d second.\n",num_first,num_second);
 #endif
+    int one_parent = (both_one_parent >> 3) << 3;
+    int two_parents = ((next_members-both_one_parent)>>2) << 3;
+    one_parent += (one_parent+two_parents - next_members); // Fixes next_members change
     unsigned short *short_res = (unsigned short *)rand_index.res;
     // normally rand_index.res would be typed as an int *, though really it's a 128 bit register
     // location. Unsigned shorts cover the 0-65536 range. I could handle ints also, but it would be
     // something like half as fast.
 
     // For ones where both bits come from one parent
-    for (int i = 0; i < (both_one_parent>>3); i++){
+    for (int i = 0; i < one_parent; i+=8){
     	FastRand(&rand_index);
     	for (int k = 0; k < 8; k++){
     		unsigned short firstIndex = short_res[k];
@@ -118,7 +122,7 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     counts[2] = 0;
     // Counts output: 0: aa 1: ab 2: ab 3: bb 4: bb , so we have to fiddle around a bit
 
-    for (int i = 0; i < ((next_members-both_one_parent)>>2); i++) {
+    for (int i = 0; i < two_parents; i+=4) {
     	// >> 2 and not 3 because the cycle only gives 4 results, not 8, because it needs 32 bits
     	FastRand(&rand_index);
     	for (int k = 0; k < 8; k++){
@@ -132,7 +136,7 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
                 allele = 1;
             }
             else if (firstIndex > thresh_aa) {
-                allele = secondIndex&1; // subtle small error. change to secondIndex?
+                allele = secondIndex&1;
             }
                         
         	#ifdef DEBUG
@@ -280,6 +284,16 @@ void initialize_generation(int number, int* gen){ // 14 milliseconds faster on g
     gen[0] = num_aa;
     gen[1] = num_ab;
     gen[2] = num_bb;
+}
+
+void fill_random_state_buffers(){
+	int fd = open("/dev/urandom",O_RDONLY);
+	char buffer = malloc(256+4);
+	read(fd,buffer,256+4);
+	close(fd);
+	unsigned int seed = (unsigned int) *buffer;
+	buffer += 4;
+	initstate(seed,buffer,256);
 }
 
 int main(int argc, char **argv){
