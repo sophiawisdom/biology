@@ -23,6 +23,9 @@
 // 3/27 replacing reading from /dev/random with seeding random() from /dev/random and then using random() saved 15 microseconds / generation
 // 8/20 - with clang, on dad's newer computer, 850 microseconds/generation. Replace clang with GCC,
 // 600 microseconds/generation.
+// Moved decision making on whether to have one parent or two from in the core logic to outside,
+// And instead of doing individual &s for individual decisions, group them all together in popcnts.
+// Also, probably get some kind of microcode loop optimization potential. ~380 microseconds/generation
 
 // Todo: multithreading. Only two cores so not much potential.
 // Maybe you could have a random number generating core and a decision core
@@ -38,6 +41,7 @@ struct threadinfo {
     sem_t *semaphore;
     int thread_id;
 };
+
 
 void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_members, int* result){
     
@@ -97,16 +101,16 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     num_second = next_members-both_one_parent;
     printf("%d first and %d second.\n",num_first,num_second);
 #endif
-    int one_parent = (both_one_parent >> 3) << 3;
+/*    int one_parent = (both_one_parent >> 3) << 3;
     int two_parents = ((next_members-both_one_parent)>>2) << 3;
-    one_parent += (one_parent+two_parents - next_members); // Fixes next_members change
+    one_parent += (one_parent+two_parents - next_members); // Fixes next_members change*/
     unsigned short *short_res = (unsigned short *)rand_index.res;
     // normally rand_index.res would be typed as an int *, though really it's a 128 bit register
     // location. Unsigned shorts cover the 0-65536 range. I could handle ints also, but it would be
     // something like half as fast.
 
     // For ones where both bits come from one parent
-    for (int i = 0; i < one_parent; i+=8){
+    for (int i = 0; i < (both_one_parent>>3); i++){
     	FastRand(&rand_index);
     	for (int k = 0; k < 8; k++){
     		unsigned short firstIndex = short_res[k];
@@ -121,13 +125,13 @@ void progress_generation(int thresh_aa, int thresh_ab, int thresh_bb, int next_m
     counts[0] = counts[2];
     counts[2] = 0;
     // Counts output: 0: aa 1: ab 2: ab 3: bb 4: bb , so we have to fiddle around a bit
-
-    for (int i = 0; i < two_parents; i+=4) {
+    int two_parents = next_members - both_one_parent;
+    for (int i = 0; i < (two_parents>>2); i++) {
     	// >> 2 and not 3 because the cycle only gives 4 results, not 8, because it needs 32 bits
     	FastRand(&rand_index);
     	for (int k = 0; k < 8; k++){
     		unsigned short firstIndex = short_res[k];
-    		k += 1;
+    		k++;
     		unsigned short secondIndex = short_res[k];
     		char allele = 0;
                         
