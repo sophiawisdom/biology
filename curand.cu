@@ -11,7 +11,7 @@
 #include <sys/time.h>
 #define ITER 10000000
 #define NUM_BLOCKS 32
-#define THREADS_PER_BLOCK 32
+#define THREADS_PER_BLOCK 128
 #define TOTAL_THREADS (NUM_BLOCKS * THREADS_PER_BLOCK)
 #define CUDA_CALL(x) do { if((x) != cudaSuccess) { \
     printf("Error at %s:%d\n",__FILE__,__LINE__); \
@@ -37,29 +37,37 @@ struct thread_info {
 };
 // Does it matter whether I pass a struct with arguments or series of arguments?
 
-__global__ void setup_kernel(curandState *state, long long *seeds){
-
+__global__ void setup_kernel(curandState *state, long long *seeds) {
   int idx = threadIdx.x+blockIdx.x*THREADS_PER_BLOCK;
-  long long seed = 1234;//seeds[idx];
+  long long seed = seeds[idx];
   curand_init(seed, idx, 0, &state[idx]); // &state[idx] != state+idx 
 }
 
-__global__ void generate_kernel(curandState *my_curandstate, thread_info t_info){
+__global__ void generate_kernel(curandState *curandstate, thread_info t_info){
   int idx = threadIdx.x+blockIdx.x*THREADS_PER_BLOCK;
+  curandState localCurandState = curandstate[idx];
+
   unsigned short num_aa = 0;
   unsigned short num_ab = 0;
-  curandState localCurandState = my_curandstate[idx];
-  thread_info local_tinfo = t_info; 
+  // num_bb is implicit and equal to (tinfo.num_sims-(num_aa+num_ab))
+  thread_info local_tinfo = t_info;
   // IDK if this is good practice; the idea is to load the thread info locally instead of getting it from the main source
 
   int num_one_parent = 0;
   for (int i = 0; i < (local_tinfo.num_sims>>5); i++){
-    num_one_parent += __popc(curand(&localCurandState)); // 64 bit version would be somewhat better, but whatevs
+  	int rand_int = curand(&localCurandState);
+    num_one_parent += __popc(rand_int); // 64 bit version would be somewhat better, but whatevs
   }
 
-  int num_two_parents = local_tinfo.num_sims-num_one_parent;
+  int num_two_parents = local_tinfo.num_sims - num_one_parent;
 
-  for (int i = 0; i < num_one_parent; i++){
+//  t_info.results[idx] = num_one_parent;
+//  curandstate[idx] = localCurandState;
+
+//  local_tinfo.results[idx] = curand(&localCurandState) >> 16;
+//  return;
+
+  for (int i = 0; i < num_one_parent; i++) {
     unsigned int rand_num = curand(&localCurandState) >> local_tinfo.scaledown_factor;
 
     if (rand_num < local_tinfo.thresh_aa){
@@ -70,70 +78,81 @@ __global__ void generate_kernel(curandState *my_curandstate, thread_info t_info)
       num_ab++;
     }
 
+    // Implict else num_bb++;
+
   }
 
   for (int i = 0; i < num_two_parents; i++){
     unsigned int p1_index = curand(&localCurandState) >> local_tinfo.scaledown_factor;
-    if (p1_index > local_tinfo.thresh_ab){
+
+    if (p1_index > local_tinfo.thresh_ab) {
+    	// First bit b
       unsigned int p2_index = curand(&localCurandState) >> local_tinfo.scaledown_factor;
 
-      if (p2_index < local_tinfo.thresh_aa){
+      if (p2_index < local_tinfo.thresh_aa) {
         num_ab++;
       }
 
       else if (p2_index < local_tinfo.thresh_ab) {
 
-        if (p1_index&1 == 0){
+        if ((p2_index&1) == 0) {
           num_ab++;
         }
 
+        // else {num_bb++}
       }
+
+      // else {num_bb++}
 
     }
 
     else if (p1_index > local_tinfo.thresh_aa) {
-      unsigned int p2_index = curand(&localCurandState) >>local_tinfo.scaledown_factor;
+      unsigned int p2_index = curand(&localCurandState) >> local_tinfo.scaledown_factor;
 
-      if (p1_index&1){ // first b sequence
+      if ((p1_index&1) == 1){ // First bit B, same as above.
 
         if (p2_index < local_tinfo.thresh_aa){
           num_ab++;
         }
 
-        if (p2_index < local_tinfo.thresh_ab){
+        else if (p2_index < local_tinfo.thresh_ab){
 
-          if (p2_index&0) {
+          if ((p2_index&1) == 0) { // Second bit 0
             num_ab++;
           }
 
+          // num_bb++
         }
+
+        // num_bb++
 
       }
 
-      else { // first a sequence
+      else { // First bit a
 
-        if (p2_index > local_tinfo.thresh_ab){
+        if (p2_index > local_tinfo.thresh_ab) { // Second bit B
           num_ab++;
         }
 
-        else if (p2_index > local_tinfo.thresh_aa){
+        else if (p2_index > local_tinfo.thresh_aa){ // second bit AB
 
-          if (p2_index&1) {
+          if ((p2_index&1) == 1) { // Second bit B
             num_ab++;
           }
 
-          else {
+          else { // Second bit A
             num_aa++;
           }
+
         }
 
-        else {
+        else { // Second bit A
           num_aa++;
         }
       }
     }
 
-    else {
+    else { // First bit A
       unsigned int p2_index = curand(&localCurandState) >> local_tinfo.scaledown_factor;
 
       if (p2_index > local_tinfo.thresh_ab){
@@ -142,7 +161,7 @@ __global__ void generate_kernel(curandState *my_curandstate, thread_info t_info)
 
       else if (p2_index > local_tinfo.thresh_aa){
 
-        if (p2_index&1){
+        if ((p2_index&1) == 1){
           num_ab++;
         }
 
@@ -159,6 +178,8 @@ __global__ void generate_kernel(curandState *my_curandstate, thread_info t_info)
     }
   }
 
+  curandstate[idx] = localCurandState;
+
   int result = (int)(num_aa);
   result = result << 16;
   result += num_ab; // Try to make sure the compiler knows this is an int
@@ -173,8 +194,8 @@ void write_bytearray(void *array, int length, char* filename){
 }
 
 void print_threadinfo(thread_info tinfo){
-  printf("num_sims: %d\nthresh_aa: %d\nthresh_ab: %d\nthresh_bb: %d\nscaledown_factor: %d\nresults: %d\n",
-    tinfo.num_sims,tinfo.thresh_aa,tinfo.thresh_ab,tinfo.thresh_bb,tinfo.scaledown_factor,tinfo.results);
+  printf("num_sims: %d\nthresh_aa: %d\nthresh_ab: %d\nthresh_bb: %d\nscaledown_factor: %d\n",
+    tinfo.num_sims,tinfo.thresh_aa,tinfo.thresh_ab,tinfo.thresh_bb,tinfo.scaledown_factor);
 }
 
 long long * get_seeds(int num_seeds){
@@ -185,12 +206,28 @@ long long * get_seeds(int num_seeds){
   return host_seeds;
 }
 
-int main(){
+int main(int argc, char **argv){
 
+  #ifdef DEBUG
+  int num_generations = 10;
+ #else
   int num_generations = 10000;
-  int num_organisms = 1024*1024;
+  if (argc == 3){
+  	num_generations = atoi(argv[1]);
+  }
+  #endif
 
-  printf("Running simulation for %d total_threads\n",TOTAL_THREADS);
+  int num_organisms = 1024*1024;
+  if (argc == 3) {
+	  num_organisms = atoi(argv[2]);
+  }
+
+  if (__builtin_popcount(num_organisms) != 1){
+  	printf("num_organisms must be a power of 2\n");
+  	exit(EXIT_FAILURE);
+  }
+
+  printf("Running simulation for %d generations with %d organisms for %d total_threads\n",num_generations, num_organisms, TOTAL_THREADS);
 
   long long * host_seeds = get_seeds(TOTAL_THREADS);
   long long * device_seeds;
@@ -209,20 +246,30 @@ int main(){
 
   thread_info t_info;
   t_info.num_sims = (num_organisms/TOTAL_THREADS);
-  t_info.thresh_aa = 262144;
-  t_info.thresh_ab = 786432;
-  t_info.thresh_bb = 1048576;
-  t_info.scaledown_factor = 12;
+  t_info.thresh_aa = num_organisms>>2;
+  t_info.thresh_ab = (num_organisms>>2) * 3;
+  t_info.thresh_bb = num_organisms;
+  int scaledown = 0;
+  for (int i = 32; i > 0; i--){
+  	if (num_organisms == (1 << i)){
+  		scaledown = (32-i);
+  		break;
+  	}
+  }
+  t_info.scaledown_factor = scaledown;
   t_info.results = device_results;
 
-  int *overall_results = (int *) malloc(num_generations*3);
+  int *overall_results = (int *) malloc(num_generations*3*sizeof(int));
 
   struct timeval start;
   struct timeval end;
   gettimeofday(&start,NULL);
-  unsigned long long start_time = start.tv_sec*1000000 + start.tv_usec;
+  unsigned long long start_time = (start.tv_sec*1000000) + start.tv_usec;
+  unsigned long long last_printed = start_time;
+
 
   for (int generation = 0; generation < num_generations; generation++){
+
     #ifdef DEBUG
     printf("Before running kernel for generation %d, tinfo looked like:\n",generation);
     print_threadinfo(t_info);
@@ -239,26 +286,24 @@ int main(){
 
     for (int i = 0; i < TOTAL_THREADS; i++){
       int k = host_results[i];
+
       short num_aa_short = k >> 16; // upper 16 bits
       short num_ab_short = k & 65535; // lower 16 bits
       // More efficient methods of extraction that explicitly extract 16 bits in asm, but not super
       // important
       short num_bb_short = (t_info.num_sims - (num_aa_short+num_ab_short));
+
       #ifdef DEBUG
       if (i % 300 == 299) {
-        printf("k = %d, num_aa_short = %d, num_ab_short = %d, generation %d\n",k,num_aa_short,num_ab_short,generation);
+        printf("k = %08x, num_aa_short = %d, num_ab_short = %d, num_bb_short = %d, generation %d\n",k,num_aa_short,num_ab_short,num_bb_short,generation);
       }
       #endif
+
       num_aa += num_aa_short;
       num_ab += num_ab_short;
       num_bb += num_bb_short;
     }
 
-    #ifdef DEBUG
-    if (generation == 0){
-      write_bytearray(host_results,TOTAL_THREADS*sizeof(int),"results");
-    }
-    #endif
 
     t_info.thresh_aa = num_aa;
     t_info.thresh_ab = num_aa + num_ab;
@@ -266,31 +311,58 @@ int main(){
     overall_results[index] = num_aa;
     overall_results[index+1] = num_ab;
     overall_results[index+2] = num_bb;
-    if (generation % 1000 == 0 && generation != 0){
+
+    if (generation % 10000 == 0 && generation != 0){
       gettimeofday(&end, NULL);
       unsigned long long end_time = end.tv_sec*1000000 + end.tv_usec;
-      printf("Results for generation %d are %d aa, %d ab and %d bb! Took %.3f seconds.\n",
-        generation,num_aa,num_ab,num_bb,(end_time-start_time)/1000000.0);
+
+      if (end_time - last_printed >= (30*1000*1000)){
+      	float since_start = (end_time-start_time)/1000000.0;
+      	float since_printed = (end_time-last_printed)/1000000.0;
+      	float ratio_done = generation/num_generations;
+      	float time_left = since_printed/ratio_done;
+      	printf("Currently on generation %d. It's been %f seconds. Projected to be %f seconds until done.\n", generation, since_start, since_printed, time_left);
+      	last_printed = end_time;
+      }
     }
   }
 
+  int i = (num_generations-5)*3;
+
+  printf("At end, num_aa = %d, num_ab = %d, num_bb = %d\n", overall_results[i], overall_results[i+1], overall_results[i+2]);
+
+  gettimeofday(&end, NULL);
+  unsigned long long end_time = (end.tv_sec*1000000) + end.tv_usec;
+
+  float time_taken = (end_time-start_time)/1000000.0;
+
+  unsigned long long matings = num_generations;
+  matings = matings << (32-t_info.scaledown_factor);
+
+  printf("Took %f seconds %llu million matings/s\n", time_taken, matings/(end_time-start_time));
+
+  #ifdef DEBUG // 40694899
   printf("Freeing host memory\n");
+  #endif
   free(host_seeds);
   free(host_results);
   free(overall_results);
+  #ifdef DEBUG
   printf("Freed host memory\n");
 
-  printf("About to free device memory, device_results\n");
-  sleep(2);
-  printf("Attempting to free device_results at location %p\n",(void *)device_results);
-  printf("Indexed, device_results is %d",*device_results);
+  printf("Attempting to free device_results\n");
+  #endif
   CUDA_CALL(cudaFree(device_results));
+  #ifdef DEBUG
   printf("Freed device results\n");
-  sleep(1);
+  #endif
   CUDA_CALL(cudaFree(device_rand_state));
+  #ifdef DEBUG
   printf("Freed device_rand_state\n");
-  sleep(1);
+  #endif
   CUDA_CALL(cudaFree(device_seeds));
+  #ifdef DEBUG
   printf("Freed device_seeds\n");
+  #endif
   return 0;
 }
