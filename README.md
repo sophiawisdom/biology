@@ -1,7 +1,8 @@
 # Fast Hardy-Weinberg equilibrium simulation
 
-This project contains two versions of hardy-weinstein equilibrium simulation:
+This project contains three versions of hardy-weinstein equilibrium simulation:
   1. Relatively slow and easy to make python implementation, located in generations.py. Benchmarks are listed at the top of generations.py. The average is something like 150k 'matings' per second. The advantage to using this is that it is very flexible.
   2. Relatively fast and much more difficult to make C implementation, located in generations.c. Current benchmark is 172m 'matings' per second. However, it is less flexible due to being written in C. There is a wrapper located in generations_controller.py that currently doesn't work but in theory pipes output to the C output and graphs it live in matplotlib.
+  3. Much faster GPU version currently without a pipeline for graphing. Current benchmark with 64 blocks and 128 threads per block with 16m organisms and 1 million generations is 24500m matings per second. With less organisms and generations, the benchmark reduces to e.g. 2200m matings per second with 131k organisms and 50k generations. These were all tested on a Tesla P100 GPU. CPU speed shouldn't matter. Requires less than 1GB of memory. Compile using nvcc. 
 
 generations.c can be built by `make standard`. If you are starting this up for the first time, you should probably change the compiler it uses. Currently it links to the gcc location on my computer. I would highly recommend GCC as opposed to clang, because at least on my computer the benchmark provided by `make speedtest` (microseconds per generation of 65536) was 850µs with clang and 600µs with gcc. This was before the decisions on whether to take both bits from one parent or take one bit from each parent was moved up to the front, [this commit](https://github.com/williamwisdom/biology/commit/243696f6f1fc2dc9c289ec91199cf5e3a5890d89) so the difference is likely different now.
